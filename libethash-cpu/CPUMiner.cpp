@@ -31,6 +31,7 @@ along with progminer.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <libethcore/Farm.h>
 #include <ethash/ethash.hpp>
+#include <ethash/progpow.hpp>
 
 #include <boost/version.hpp>
 
@@ -153,10 +154,10 @@ CPUMiner::CPUMiner(unsigned _index, CPSettings _settings, DeviceDescriptor& _dev
 
 CPUMiner::~CPUMiner()
 {
-    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::~CPUMiner() begin");
+//    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::~CPUMiner() begin");
     stopWorking();
     kick_miner();
-    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::~CPUMiner() end");
+//    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::~CPUMiner() end");
 }
 
 
@@ -165,7 +166,7 @@ CPUMiner::~CPUMiner()
  */
 bool CPUMiner::initDevice()
 {
-    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::initDevice begin");
+//    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::initDevice begin");
 
     cpulog << "Using CPU: " << m_deviceDescriptor.cpCpuNumer << " " << m_deviceDescriptor.cuName
            << " Memory : " << dev::getFormattedMemory((double)m_deviceDescriptor.totalMemory);
@@ -198,7 +199,7 @@ bool CPUMiner::initDevice()
         // Handle Errorcode (GetLastError) ??
     }
 #endif
-    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::initDevice end");
+//    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::initDevice end");
     return true;
 }
 
@@ -251,7 +252,8 @@ void CPUMiner::search(const dev::eth::WorkPackage& w)
             break;
 
 
-        auto r = ethash::search(context, header, boundary, nonce, blocksize);
+        //auto r = ethash::search(context, header, boundary, nonce, blocksize);
+        auto r = progpow::search(context, -1, header, boundary, nonce, blocksize);
         if (r.solution_found)
         {
             h256 mix{reinterpret_cast<byte*>(r.mix_hash.bytes), h256::ConstructFromPointer};
@@ -274,7 +276,7 @@ void CPUMiner::search(const dev::eth::WorkPackage& w)
  */
 void CPUMiner::workLoop()
 {
-    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::workLoop() begin");
+//    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::workLoop() begin");
 
     WorkPackage current;
     current.header = h256();
@@ -323,13 +325,14 @@ void CPUMiner::workLoop()
         }
     }
 
-    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::workLoop() end");
+//    DEV_BUILD_LOG_PROGRAMFLOW(cpulog, "cp-" << m_index << " CPUMiner::workLoop() end");
 }
 
 
 void CPUMiner::enumDevices(std::map<string, DeviceDescriptor>& _DevicesCollection)
 {
-    unsigned numDevices = getNumDevices();
+    //unsigned numDevices = getNumDevices();
+    unsigned numDevices = 1;
 
     for (unsigned i = 0; i < numDevices; i++)
     {
