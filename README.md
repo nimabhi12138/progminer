@@ -1,11 +1,8 @@
 # progminer (ethminer fork with ProgPoW implementation)
 
-![progminer](progminer.png)
+[![Discord](https://img.shields.io/badge/discord-join%20chat-blue.svg)](https://discord.gg/wE3rmYY)
 
-[![Discord](https://img.shields.io/badge/discord-join%20chat-blue.svg)](https://discord.gg/ZYfFbMH)
-[![Releases](https://img.shields.io/github/downloads/gangnamtestnet/progminer/total.svg)][Releases]
-
-> Ethereum ProgPoW miner with OpenCL, CUDA and stratum support
+> Ethereum ProgPoW miner with OpenCL, CUDA, CPU and stratum support
 
 **Progminer** is an ProgPoW GPU mining worker: with progminer you can mine every coin which relies on an ProgPoW Proof of Work thus including Ethereum ProgPoW and others. This is the actively maintained version of progminer. It originates from [ethminer](https://github.com/ethereum-mining/ethminer) project. Check the original [ProgPoW](https://github.com/ifdefelse/progpow) implementation and [EIP-1057](https://eips.ethereum.org/EIPS/eip-1057) for specification.
 
