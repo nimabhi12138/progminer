@@ -34,6 +34,53 @@
 * [Contribute](#contribute)
 * [F.A.Q.](#faq)
 
+## Build
+
+1. Make sure git submodules are up to date:
+
+    ```shell
+    git submodule update --init --recursive
+    ```
+
+2. Create a build directory:
+
+    ```shell
+    mkdir build
+    cd build
+    ```
+
+3. Configure the project with CMake. Check out the additional [configuration options](#cmake-configuration-options).
+
+    ```shell
+    cmake ..
+    ```
+
+    **Note:** On Windows, it's possible to have issues with VS 2017 default compilers, due to CUDA expecting a specific toolset version; in that case, use the VS 2017 installer to get the VS 2015 compilers and pass the `-T v140` option:
+
+    ```shell
+    cmake .. -G "Visual Studio 15 2017 Win64"
+    # or this if you have build errors in the CUDA step
+    cmake .. -G "Visual Studio 15 2017 Win64" -T v140
+    ```
+
+4. Build the project using [CMake Build Tool Mode]. This is a portable variant of `make`.
+
+    ```shell
+    cmake --build .
+    ```
+
+    Note: On Windows, it is possible to have compiler issues if you don't specify the build config. In that case use:
+
+    ```shell
+    cmake --build . --config Release
+    ```
+
+5. _(Optional, Linux only)_ Install the built executable:
+
+    ```shell
+    sudo make install
+    ```
+
 
 ## Install
 
