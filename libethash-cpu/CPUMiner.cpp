@@ -331,8 +331,7 @@ void CPUMiner::workLoop()
 
 void CPUMiner::enumDevices(std::map<string, DeviceDescriptor>& _DevicesCollection)
 {
-    //unsigned numDevices = getNumDevices();
-    unsigned numDevices = 1;
+    unsigned numDevices = getNumDevices();
 
     for (unsigned i = 0; i < numDevices; i++)
     {
