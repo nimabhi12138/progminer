@@ -1,11 +1,8 @@
 # progminer (ethminer fork with ProgPoW implementation)
 
-![progminer](progminer.png)
+[![Discord](https://img.shields.io/badge/discord-join%20chat-blue.svg)](https://discord.gg/wE3rmYY)
 
-[![Discord](https://img.shields.io/badge/discord-join%20chat-blue.svg)](https://discord.gg/ZYfFbMH)
-[![Releases](https://img.shields.io/github/downloads/gangnamtestnet/progminer/total.svg)][Releases]
-
-> Ethereum ProgPoW miner with OpenCL, CUDA and stratum support
+> Ethereum ProgPoW miner with OpenCL, CUDA, CPU and stratum support
 
 **Progminer** is an ProgPoW GPU mining worker: with progminer you can mine every coin which relies on an ProgPoW Proof of Work thus including Ethereum ProgPoW and others. This is the actively maintained version of progminer. It originates from [ethminer](https://github.com/ethereum-mining/ethminer) project. Check the original [ProgPoW](https://github.com/ifdefelse/progpow) implementation and [EIP-1057](https://eips.ethereum.org/EIPS/eip-1057) for specification.
 
@@ -33,6 +30,66 @@
 * [Maintainers & Authors](#maintainers--authors)
 * [Contribute](#contribute)
 * [F.A.Q.](#faq)
+
+## Build
+
+1. Make sure git submodules are up to date:
+
+    ```shell
+    git submodule update --init --recursive
+    ```
+
+2. Create a build directory:
+
+    ```shell
+    mkdir build
+    cd build
+    ```
+
+3. Configure the project with CMake. Check out the additional [configuration options](#cmake-configuration-options).
+
+    ```shell
+    cmake ..
+    ```
+
+    **Note:** On Windows, it's possible to have issues with VS 2017 default compilers, due to CUDA expecting a specific toolset version; in that case, use the VS 2017 installer to get the VS 2015 compilers and pass the `-T v140` option:
+
+    ```shell
+    cmake .. -G "Visual Studio 15 2017 Win64"
+    # or this if you have build errors in the CUDA step
+    cmake .. -G "Visual Studio 15 2017 Win64" -T v140
+    ```
+
+4. Build the project using [CMake Build Tool Mode]. This is a portable variant of `make`.
+
+    ```shell
+    cmake --build .
+    ```
+
+    Note: On Windows, it is possible to have compiler issues if you don't specify the build config. In that case use:
+
+    ```shell
+    cmake --build . --config Release
+    ```
+
+5. _(Optional, Linux only)_ Install the built executable:
+
+    ```shell
+    sudo make install
+    ```
+## CMake configuration options
+
+Pass these options to CMake configuration command, e.g.
+
+```shell
+cmake .. -DETHASHCUDA=ON -DETHASHCL=OFF
+```
+
+* `-DETHASHCL=ON` - enable OpenCL mining, `ON` by default.
+* `-DETHASHCUDA=ON` - enable CUDA mining, `ON` by default.
+* `-DAPICORE=ON` - enable API Server, `ON` by default.
+* `-DBINKERN=ON` - install AMD binary kernels, `ON` by default.
+* `-DETHDBUS=ON` - enable D-Bus support, `OFF` by default.
 
 
 ## Install
