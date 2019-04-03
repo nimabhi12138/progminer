@@ -253,7 +253,7 @@ void CPUMiner::search(const dev::eth::WorkPackage& w)
 
 
         //auto r = ethash::search(context, header, boundary, nonce, blocksize);
-        auto r = progpow::search(context, -1, header, boundary, nonce, blocksize);
+        auto r = progpow::search(context, w.block, header, boundary, nonce, blocksize);
         if (r.solution_found)
         {
             h256 mix{reinterpret_cast<byte*>(r.mix_hash.bytes), h256::ConstructFromPointer};
