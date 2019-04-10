@@ -247,9 +247,9 @@ std::string ProgPow::math(std::string d, std::string a, std::string b, uint32_t 
     switch (r % 11)
     {
     case 0:
-        return d + " = " + a + " + " + b + ";\n";
-    case 1:
         return d + " = " + a + " * " + b + ";\n";
+    case 1:
+        return d + " = " + a + " + " + b + ";\n";
     case 2:
         return d + " = mul_hi(" + a + ", " + b + ");\n";
     case 3:
