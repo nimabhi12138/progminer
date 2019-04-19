@@ -117,9 +117,9 @@ inline uint32_t random_math(uint32_t a, uint32_t b, uint32_t selector) noexcept
     {
     default:
     case 2:
-        return a * b;
-    case 3:
       return a + b;
+    case 3:
+      return a * b;
     case 4:
         return mul_hi32(a, b);
     case 5:
