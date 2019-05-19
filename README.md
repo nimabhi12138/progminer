@@ -85,6 +85,7 @@ Pass these options to CMake configuration command, e.g.
 cmake .. -DETHASHCUDA=ON -DETHASHCL=OFF
 ```
 
+* `-DETHASHCPU=ON` - enable CPU mining, `OFF` by default.
 * `-DETHASHCL=ON` - enable OpenCL mining, `ON` by default.
 * `-DETHASHCUDA=ON` - enable CUDA mining, `ON` by default.
 * `-DAPICORE=ON` - enable API Server, `ON` by default.
