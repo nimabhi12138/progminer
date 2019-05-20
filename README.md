@@ -17,6 +17,7 @@
 * OpenCL devices picking
 * farm failover (getwork + stratum)
 * Ethereum-based ProgPoW implementations supported only, doesn't support previous ethash version or Bitcoin-based forks.
+* CPU mining
 
 
 ## Table of Contents
@@ -85,6 +86,7 @@ Pass these options to CMake configuration command, e.g.
 cmake .. -DETHASHCUDA=ON -DETHASHCL=OFF
 ```
 
+* `-DETHASHCPU=ON` - enable CPU mining, `OFF` by default.
 * `-DETHASHCL=ON` - enable OpenCL mining, `ON` by default.
 * `-DETHASHCUDA=ON` - enable CUDA mining, `ON` by default.
 * `-DAPICORE=ON` - enable API Server, `ON` by default.
@@ -196,10 +198,6 @@ The default parameters are fine in most scenario's (CUDA). For OpenCL it varies 
 ### What is progminer's relationship with [Genoil's fork]?
 
 [Genoil's fork] was the original source of this version, but as Genoil is no longer consistently maintaining that fork it became almost impossible for developers to get new code merged there. In the interests of progressing development without waiting for reviews this fork should be considered the active one and Genoil's as legacy code.
-
-### Can I CPU Mine?
-
-No, use geth, the go program made for ethereum by ethereum.
 
 ### CUDA GPU order changes sometimes. What can I do?
 
