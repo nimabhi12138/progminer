@@ -381,6 +381,37 @@ URI::URI(std::string uri, bool _sim) : m_uri{std::move(uri)}
         m_password = tmpStr;
     if (url_decode(m_worker, tmpStr))
         m_worker = tmpStr;
+
+    if (!m_query.empty())
+    {
+        std::string normalizedQuery = m_query;
+        if (!normalizedQuery.empty() && normalizedQuery.front() == '?')
+            normalizedQuery.erase(normalizedQuery.begin());
+
+        std::vector<std::string> parts;
+        boost::split(parts, normalizedQuery, boost::is_any_of("&"), boost::token_compress_off);
+        for (auto& part : parts)
+        {
+            if (part.empty())
+                continue;
+            std::string key = part;
+            std::string value;
+            auto pos = part.find('=');
+            if (pos != std::string::npos)
+            {
+                key = part.substr(0, pos);
+                value = part.substr(pos + 1);
+            }
+            if (boost::iequals(key, "sni") || boost::iequals(key, "tlsname") ||
+                boost::iequals(key, "tls_host") || boost::iequals(key, "tlshost"))
+            {
+                std::string decodedValue;
+                if (url_decode(value, decodedValue))
+                    value = decodedValue;
+                m_tlsServerName = value;
+            }
+        }
+    }
 }
 
 ProtocolFamily URI::Family() const

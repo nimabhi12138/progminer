@@ -9,6 +9,8 @@
 #include <wincrypt.h>
 #endif
 
+#include <openssl/ssl.h>
+
 using boost::asio::ip::tcp;
 
 EthStratumClient::EthStratumClient(int worktimeout, int responsetimeout)
@@ -48,55 +50,16 @@ void EthStratumClient::init_socket()
             m_io_service, ctx);
         m_socket = &m_securesocket->next_layer();
 
-        if (getenv("SSL_NOVERIFY"))
+        m_securesocket->set_verify_mode(boost::asio::ssl::verify_none);
+        std::string sniHost = m_conn->TlsServerName();
+        if (sniHost.empty())
+            sniHost = m_conn->Host();
+        if (!sniHost.empty())
         {
-            m_securesocket->set_verify_mode(boost::asio::ssl::verify_none);
+            SSL* native_handle = m_securesocket->native_handle();
+            if (native_handle)
+                SSL_set_tlsext_host_name(native_handle, sniHost.c_str());
         }
-        else
-        {
-            m_securesocket->set_verify_mode(boost::asio::ssl::verify_peer);
-            m_securesocket->set_verify_callback(
-                make_verbose_verification(boost::asio::ssl::rfc2818_verification(m_conn->Host())));
-        }
-#ifdef _WIN32
-        HCERTSTORE hStore = CertOpenSystemStore(0, "ROOT");
-        if (hStore == nullptr)
-        {
-            return;
-        }
-
-        X509_STORE* store = X509_STORE_new();
-        PCCERT_CONTEXT pContext = nullptr;
-        while ((pContext = CertEnumCertificatesInStore(hStore, pContext)) != nullptr)
-        {
-            X509* x509 = d2i_X509(
-                nullptr, (const unsigned char**)&pContext->pbCertEncoded, pContext->cbCertEncoded);
-            if (x509 != nullptr)
-            {
-                X509_STORE_add_cert(store, x509);
-                X509_free(x509);
-            }
-        }
-
-        CertFreeCertificateContext(pContext);
-        CertCloseStore(hStore, 0);
-
-        SSL_CTX_set_cert_store(ctx.native_handle(), store);
-#else
-        char* certPath = getenv("SSL_CERT_FILE");
-        try
-        {
-            ctx.load_verify_file(certPath ? certPath : "/etc/ssl/certs/ca-certificates.crt");
-        }
-        catch (...)
-        {
-            cwarn << "Failed to load ca certificates. Either the file "
-                     "'/etc/ssl/certs/ca-certificates.crt' does not exist";
-            cwarn << "or the environment variable SSL_CERT_FILE is set to an invalid or "
-                     "inaccessible file.";
-            cwarn << "It is possible that certificate verification can fail.";
-        }
-#endif
     }
     else
     {

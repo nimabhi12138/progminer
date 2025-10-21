@@ -63,6 +63,8 @@ public:
     std::string User() const { return m_user; }
     std::string Pass() const { return m_password; }
     std::string Workername() const { return m_worker; }
+    std::string Query() const { return m_query; }
+    std::string TlsServerName() const { return m_tlsServerName; }
     std::string UserDotWorker() const;
     SecureLevel SecLevel() const;
     ProtocolFamily Family() const;
@@ -83,6 +85,7 @@ public:
     bool StratumModeConfirmed() { return m_stratumModeConfirmed; }
     bool IsUnrecoverable() { return m_unrecoverable; }
     void MarkUnrecoverable() { m_unrecoverable = true; }
+    void ResetUnrecoverable() { m_unrecoverable = false; }
 
     bool Responds() { return m_responds; }
     void Responds(bool _value) { m_responds = _value; }
@@ -105,6 +108,7 @@ private:
     std::string m_user;
     std::string m_password = "X";
     std::string m_worker;
+    std::string m_tlsServerName;
     std::string m_uri;
 
     unsigned short m_stratumMode = 999;  // Initial value 999 means not tested yet

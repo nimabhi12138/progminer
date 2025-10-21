@@ -14,16 +14,16 @@
     You should have received a copy of the GNU General Public License
     along with progminer.  If not, see <http://www.gnu.org/licenses/>.
 */
-
 #include <CLI/CLI.hpp>
 
 #include <progminer/buildinfo.h>
 #include <condition_variable>
-
-#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
-#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
-#endif
-
+#include <fstream>
+#include <sstream>
+#include <chrono>
+#include <thread>
+#include <vector>
+#include <atomic>
 #include <libethcore/Farm.h>
 #if ETH_ETHASHCL
 #include <libethash-cl/CLMiner.h>
@@ -41,16 +41,22 @@
 #include <regex>
 #endif
 
+#include <json/json.h>
+
+#ifdef USE_NVML_FAN_CONTROL
+#include <nvml.h>
+#endif
+
 #if defined(__linux__) || defined(__APPLE__)
 #include <execinfo.h>
 #elif defined(_WIN32)
 #include <Windows.h>
 #endif
 
-using namespace std;
-using namespace dev;
-using namespace dev::eth;
 
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
 
 // Global vars
 bool g_running = false;
@@ -98,6 +104,9 @@ public:
 
     virtual ~MinerCLI()
     {
+#ifdef USE_NVML_FAN_CONTROL
+        stopNvmlFanControl();
+#endif
         m_cliDisplayTimer.cancel();
         g_io_service.stop();
         m_io_thread.join();
@@ -271,6 +280,10 @@ public:
 
         vector<string> pools;
         app.add_option("-P,--pool", pools, "");
+        auto configOpt = app.add_option("-C,--config", m_configPath, "");
+        auto configOptShort = app.add_option("-c", m_configPath, "");
+        configOpt->excludes(configOptShort);
+        configOptShort->excludes(configOpt);
 
         app.add_option("--failover-timeout", m_PoolSettings.poolFailoverTimeout, "", true)
             ->check(CLI::Range(0, 999));
@@ -369,6 +382,11 @@ public:
 
         app.add_option("--tstop", m_FarmSettings.tempStop, "", true)->check(CLI::Range(30, 100));
         app.add_option("--tstart", m_FarmSettings.tempStart, "", true)->check(CLI::Range(30, 100));
+#ifdef USE_NVML_FAN_CONTROL
+        app.add_option("--nvml-temp-threshold", m_nvmlTempThreshold, "", true)->check(CLI::Range(30, 110));
+        app.add_option("--nvml-fan-speed", m_nvmlFanSpeed, "", true)->check(CLI::Range(10, 100));
+        app.add_option("--nvml-poll-interval", m_nvmlPollInterval, "", true)->check(CLI::Range(1, 60));
+#endif
 
 
         // Exception handling is held at higher level
@@ -388,9 +406,18 @@ public:
             return false;
         }
 
+        if (!m_configPath.empty())
+            loadPoolConfigFromFile(pools);
 
+
+#ifdef USE_NVML_FAN_CONTROL
+        if ((m_nvmlTempThreshold == 0) != (m_nvmlFanSpeed == 0))
+            throw std::invalid_argument("Both --nvml-temp-threshold and --nvml-fan-speed must be specified together.");
+#endif
         if (cl_miner)
             m_minerType = MinerType::CL;
+        if (m_nvmlTempThreshold && m_nvmlFanSpeed && m_nvmlPollInterval == 0)
+            m_nvmlPollInterval = 1;
         else if (cuda_miner)
             m_minerType = MinerType::CUDA;
         else if (cpu_miner)
@@ -772,6 +799,9 @@ public:
              << "                        how to fill in this value please use" << endl
              << "                        progminer --help-ext con" << endl
              << endl
+             << "    -C,--config         Load pool and wallet settings from JSON FILE" << endl
+             << "                        (keys: wallet, worker, password, pools[])" << endl
+             << endl
 
              << "Common Options :" << endl
              << endl
@@ -1002,6 +1032,11 @@ public:
                  << endl
                  << "                        2 A search segment is picked on every new job" << endl
                  << endl
+#ifdef USE_NVML_FAN_CONTROL
+                 << "    --nvml-temp-threshold  INT[30 .. 110] Trigger NVML fan override" << endl
+                 << "    --nvml-fan-speed      INT[10 .. 100] Fan speed percentage when override active" << endl
+                 << "    --nvml-poll-interval  INT[1 .. 60]   NVML temperature polling interval in seconds" << endl
+#endif
                  << "    --nocolor           FLAG Monochrome display log lines" << endl
                  << "    --syslog            FLAG Use syslog appropriate output (drop timestamp "
                     "and"
@@ -1196,6 +1231,12 @@ private:
     {
 
         new PoolManager(m_PoolSettings);
+
+#if defined(USE_NVML_FAN_CONTROL)
+        if (m_nvmlTempThreshold && m_nvmlFanSpeed)
+            startNvmlFanControl();
+#endif
+
         if (m_mode != OperationMode::Simulation)
             for (auto conn : m_PoolSettings.connections)
                 cnote << "Configured pool " << conn->Host() + ":" + to_string(conn->Port());
@@ -1231,6 +1272,9 @@ private:
         if (PoolManager::p().isRunning())
             PoolManager::p().stop();
 
+#ifdef USE_NVML_FAN_CONTROL
+        stopNvmlFanControl();
+#endif
         cnote << "Terminated!";
         return;
     }
@@ -1255,6 +1299,12 @@ private:
     CUSettings m_CUSettings;          // Operating settings for CUDA Miners
     CPSettings m_CPSettings;          // Operating settings for CPU Miners
 
+    // Configuration file support
+    std::string m_configPath;
+    std::string m_configWallet;
+    std::string m_configWorker;
+    std::string m_configPassword = "x";
+
     //// -- Pool manager related params
     //std::vector<std::shared_ptr<URI>> m_poolConns;
 
@@ -1277,7 +1327,253 @@ private:
 #if ETH_DBUS
     DBusInt dbusint;
 #endif
+
+    void loadPoolConfigFromFile(std::vector<std::string>& pools);
+    std::string buildPoolUrl(const Json::Value& poolNode) const;
+    std::string applyPlaceholders(
+        std::string value, const std::string& wallet, const std::string& worker,
+        const std::string& password) const;
+    static void replaceAll(std::string& str, const std::string& from, const std::string& to);
+    std::string buildDefaultUser(const std::string& wallet, const std::string& worker) const;
+
+#ifdef USE_NVML_FAN_CONTROL
+    unsigned m_nvmlTempThreshold = 0;
+    unsigned m_nvmlFanSpeed = 0;
+    unsigned m_nvmlPollInterval = 5;
+    std::atomic<bool> m_nvmlStop{false};
+    std::thread m_nvmlThread;
+    bool m_nvmlInitialized = false;
+    void startNvmlFanControl();
+    void stopNvmlFanControl();
+#endif
 };
+
+void MinerCLI::replaceAll(std::string& str, const std::string& from, const std::string& to)
+{
+    if (from.empty())
+        return;
+    std::size_t start_pos = 0;
+    while ((start_pos = str.find(from, start_pos)) != std::string::npos)
+    {
+        str.replace(start_pos, from.length(), to);
+        start_pos += to.length();
+    }
+}
+
+std::string MinerCLI::buildDefaultUser(const std::string& wallet, const std::string& worker) const
+{
+    if (wallet.empty())
+        return {};
+    if (worker.empty())
+        return wallet;
+    return wallet + "." + worker;
+}
+
+std::string MinerCLI::applyPlaceholders(
+    std::string value, const std::string& wallet, const std::string& worker,
+    const std::string& password) const
+{
+    auto requiresWallet =
+        value.find("{{wallet}}") != std::string::npos || value.find("{{WALLET}}") != std::string::npos ||
+        value.find("{{user}}") != std::string::npos || value.find("{{USER}}") != std::string::npos;
+    if (requiresWallet && wallet.empty())
+        throw std::runtime_error(
+            "Wallet address not provided but required by config file '" + m_configPath + "'");
+
+    auto requiresWorker =
+        value.find("{{worker}}") != std::string::npos || value.find("{{WORKER}}") != std::string::npos;
+    if (requiresWorker && worker.empty())
+        throw std::runtime_error(
+            "Worker name not provided but required by config file '" + m_configPath + "'");
+
+    auto requiresPassword =
+        value.find("{{password}}") != std::string::npos || value.find("{{PASSWORD}}") != std::string::npos;
+    if (requiresPassword && password.empty())
+        throw std::runtime_error(
+            "Password not provided but required by config file '" + m_configPath + "'");
+
+    const auto user = buildDefaultUser(wallet, worker);
+
+    replaceAll(value, "{{wallet}}", wallet);
+    replaceAll(value, "{{WALLET}}", wallet);
+    replaceAll(value, "{{worker}}", worker);
+    replaceAll(value, "{{WORKER}}", worker);
+    replaceAll(value, "{{password}}", password);
+    replaceAll(value, "{{PASSWORD}}", password);
+    replaceAll(value, "{{user}}", user);
+    replaceAll(value, "{{USER}}", user);
+
+    if (value.find("{{") != std::string::npos)
+        throw std::runtime_error(
+            "Unresolved placeholder found while processing config file '" + m_configPath + "': " + value);
+
+    return value;
+}
+
+std::string MinerCLI::buildPoolUrl(const Json::Value& poolNode) const
+{
+    if (poolNode.isString())
+        return applyPlaceholders(poolNode.asString(), m_configWallet, m_configWorker, m_configPassword);
+
+    if (!poolNode.isObject())
+        throw std::runtime_error(
+            "Invalid pool entry type in config file '" + m_configPath + "'. Expected object or string.");
+
+    std::string wallet = m_configWallet;
+    if (poolNode.isMember("wallet") && poolNode["wallet"].isString())
+        wallet = poolNode["wallet"].asString();
+    if (wallet.empty() && poolNode.isMember("address") && poolNode["address"].isString())
+        wallet = poolNode["address"].asString();
+
+    std::string worker = m_configWorker;
+    if (poolNode.isMember("worker") && poolNode["worker"].isString())
+        worker = poolNode["worker"].asString();
+
+    std::string password = m_configPassword;
+    if (poolNode.isMember("password") && poolNode["password"].isString())
+        password = poolNode["password"].asString();
+    else if (poolNode.isMember("pass") && poolNode["pass"].isString())
+        password = poolNode["pass"].asString();
+    if (password.empty())
+        password = "x";
+
+    if (poolNode.isMember("url") && poolNode["url"].isString())
+        return applyPlaceholders(poolNode["url"].asString(), wallet, worker, password);
+
+    std::string scheme = "stratum+tcp";
+    if (poolNode.isMember("scheme") && poolNode["scheme"].isString())
+        scheme = poolNode["scheme"].asString();
+
+    std::string host;
+    if (poolNode.isMember("host") && poolNode["host"].isString())
+        host = poolNode["host"].asString();
+    if (host.empty())
+        throw std::runtime_error("Pool entry missing 'host' in config file '" + m_configPath + "'");
+
+    int port = 0;
+    if (poolNode.isMember("port"))
+    {
+        if (!poolNode["port"].isInt() && !poolNode["port"].isUInt())
+            throw std::runtime_error("Pool entry 'port' must be numeric in config file '" + m_configPath + "'");
+        port = poolNode["port"].asInt();
+    }
+    if (port <= 0)
+        throw std::runtime_error("Pool entry missing or invalid 'port' in config file '" + m_configPath + "'");
+
+    std::string user;
+    if (poolNode.isMember("user") && poolNode["user"].isString())
+        user = poolNode["user"].asString();
+    else if (poolNode.isMember("login") && poolNode["login"].isString())
+        user = poolNode["login"].asString();
+
+    if (!user.empty())
+        user = applyPlaceholders(user, wallet, worker, password);
+    else
+    {
+        if (wallet.empty())
+            throw std::runtime_error(
+                "Pool entry requires 'wallet' or explicit 'user' in config file '" + m_configPath + "'");
+        user = buildDefaultUser(wallet, worker);
+    }
+
+    std::string pass;
+    if (poolNode.isMember("pass") && poolNode["pass"].isString())
+        pass = poolNode["pass"].asString();
+    else if (poolNode.isMember("password") && poolNode["password"].isString())
+        pass = poolNode["password"].asString();
+    else
+        pass = password;
+    pass = applyPlaceholders(pass, wallet, worker, password);
+
+    std::ostringstream oss;
+    oss << scheme << "://" << user;
+    if (!pass.empty())
+        oss << ":" << pass;
+    oss << "@";
+    oss << applyPlaceholders(host, wallet, worker, password);
+    if (port > 0)
+        oss << ":" << port;
+    std::string pathStr;
+    if (poolNode.isMember("path") && poolNode["path"].isString())
+        pathStr = applyPlaceholders(poolNode["path"].asString(), wallet, worker, password);
+    std::string queryStr;
+    if (poolNode.isMember("query") && poolNode["query"].isString())
+        queryStr = applyPlaceholders(poolNode["query"].asString(), wallet, worker, password);
+    if (poolNode.isMember("sni") && poolNode["sni"].isString())
+    {
+        std::string sniValue =
+            applyPlaceholders(poolNode["sni"].asString(), wallet, worker, password);
+        std::string param = "sni=" + sniValue;
+        if (queryStr.empty())
+        {
+            queryStr = "?" + param;
+        }
+        else
+        {
+            if (queryStr[0] != '?' && queryStr[0] != '&')
+                queryStr = "?" + queryStr;
+            if (queryStr.back() != '?' && queryStr.back() != '&')
+                queryStr += "&";
+            queryStr += param;
+        }
+    }
+    if (!pathStr.empty())
+        oss << pathStr;
+    if (!queryStr.empty())
+        oss << queryStr;
+
+    return oss.str();
+}
+
+void MinerCLI::loadPoolConfigFromFile(std::vector<std::string>& pools)
+{
+    std::ifstream configStream(m_configPath, std::ios::in | std::ios::binary);
+    if (!configStream.is_open())
+        throw std::runtime_error("Unable to open config file '" + m_configPath + "'");
+
+    Json::CharReaderBuilder builder;
+    builder["collectComments"] = false;
+    Json::Value root;
+    std::string errs;
+    if (!Json::parseFromStream(builder, configStream, &root, &errs))
+        throw std::runtime_error("Failed to parse config file '" + m_configPath + "': " + errs);
+
+    if (root.isMember("wallet") && root["wallet"].isString())
+        m_configWallet = root["wallet"].asString();
+    if (m_configWallet.empty() && root.isMember("address") && root["address"].isString())
+        m_configWallet = root["address"].asString();
+    if (root.isMember("worker") && root["worker"].isString())
+        m_configWorker = root["worker"].asString();
+    if (root.isMember("password") && root["password"].isString())
+        m_configPassword = root["password"].asString();
+    else if (root.isMember("pass") && root["pass"].isString())
+        m_configPassword = root["pass"].asString();
+    if (m_configPassword.empty())
+        m_configPassword = "x";
+
+    if (!root.isMember("pools"))
+        throw std::runtime_error("Config file '" + m_configPath + "' does not contain 'pools' entry");
+
+    const Json::Value& poolsNode = root["pools"];
+    if (!poolsNode.isArray())
+        throw std::runtime_error("'pools' entry in config file '" + m_configPath + "' must be an array");
+
+    std::size_t added = 0;
+    for (const auto& poolNode : poolsNode)
+    {
+        std::string url = buildPoolUrl(poolNode);
+        if (!url.empty())
+        {
+            pools.push_back(url);
+            ++added;
+        }
+    }
+
+    if (!added)
+        throw std::runtime_error("Config file '" + m_configPath + "' does not define any valid pools");
+
+    cnote << "Loaded " << added << " pool(s) from config file " << m_configPath;
+}
 
 int main(int argc, char** argv)
 {
@@ -1292,6 +1588,44 @@ int main(int argc, char** argv)
     // Need to change the code page from the default OEM code page (437) so that
     // UTF-8 characters are displayed correctly in the console
     SetConsoleOutputCP(CP_UTF8);
+#endif
+#if defined(_WIN32)
+    auto appendEnvPath = [](const std::wstring& path) {
+        if (path.empty())
+            return;
+        DWORD attr = GetFileAttributesW(path.c_str());
+        if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY))
+            return;
+        DWORD size = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+        std::wstring current;
+        if (size)
+        {
+            std::vector<wchar_t> buffer(size);
+            DWORD written = GetEnvironmentVariableW(L"PATH", buffer.data(), size);
+            if (written > 0)
+                current.assign(buffer.data(), written);
+        }
+        if (current.find(path) != std::wstring::npos)
+            return;
+        if (!current.empty() && current.back() != L';')
+            current += L';';
+        current += path;
+        SetEnvironmentVariableW(L"PATH", current.c_str());
+    };
+
+    wchar_t modulePath[MAX_PATH];
+    DWORD moduleLen = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+    if (moduleLen > 0 && moduleLen < MAX_PATH)
+    {
+        std::wstring exeDir(modulePath, moduleLen);
+        size_t pos = exeDir.find_last_of(L"\\/");
+        if (pos != std::wstring::npos)
+            exeDir.resize(pos);
+        appendEnvPath(exeDir);
+    }
+    appendEnvPath(L"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\bin");
+    appendEnvPath(L"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\libnvvp");
+    appendEnvPath(L"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\extras\\CUPTI\\lib64");
 #endif
 
     // Always out release version
@@ -1386,3 +1720,103 @@ int main(int argc, char** argv)
         return 4;
     }
 }
+#ifdef USE_NVML_FAN_CONTROL
+void MinerCLI::startNvmlFanControl()
+{
+    if (m_nvmlTempThreshold == 0 || m_nvmlFanSpeed == 0 || m_nvmlThread.joinable())
+        return;
+
+    nvmlReturn_t result = nvmlInit_v2();
+    if (result != NVML_SUCCESS)
+    {
+        cwarn << "NVML initialization failed: " << nvmlErrorString(result);
+        return;
+    }
+    m_nvmlInitialized = true;
+
+    unsigned int deviceCount = 0;
+    result = nvmlDeviceGetCount_v2(&deviceCount);
+    if (result != NVML_SUCCESS || deviceCount == 0)
+    {
+        cwarn << "NVML unable to enumerate GPUs: " << nvmlErrorString(result);
+        nvmlShutdown();
+        m_nvmlInitialized = false;
+        return;
+    }
+
+    std::vector<nvmlDevice_t> devices;
+    devices.reserve(deviceCount);
+    for (unsigned int index = 0; index < deviceCount; ++index)
+    {
+        nvmlDevice_t handle;
+        if (nvmlDeviceGetHandleByIndex_v2(index, &handle) == NVML_SUCCESS)
+            devices.push_back(handle);
+    }
+
+    if (devices.empty())
+    {
+        cwarn << "NVML found no controllable GPU devices.";
+        nvmlShutdown();
+        m_nvmlInitialized = false;
+        return;
+    }
+
+    m_nvmlStop.store(false, std::memory_order_relaxed);
+    m_nvmlThread = std::thread([this, devices]() {
+        while (!m_nvmlStop.load(std::memory_order_relaxed))
+        {
+            for (auto device : devices)
+            {
+                unsigned int temperature = 0;
+                if (nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temperature) != NVML_SUCCESS)
+                    continue;
+
+                unsigned int fanCount = 0;
+                if (nvmlDeviceGetNumFans(device, &fanCount) != NVML_SUCCESS || fanCount == 0)
+                    fanCount = 1;
+
+                if (temperature >= m_nvmlTempThreshold)
+                {
+                    for (unsigned int fan = 0; fan < fanCount; ++fan)
+                        nvmlDeviceSetFanSpeed_v2(device, fan, m_nvmlFanSpeed);
+                }
+                else
+                {
+                    for (unsigned int fan = 0; fan < fanCount; ++fan)
+                        nvmlDeviceSetDefaultFanSpeed_v2(device, fan);
+                }
+            }
+
+            for (unsigned int i = 0; i < m_nvmlPollInterval; ++i)
+            {
+                if (m_nvmlStop.load(std::memory_order_relaxed))
+                    break;
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        }
+
+        for (auto device : devices)
+        {
+            unsigned int fanCount = 0;
+            if (nvmlDeviceGetNumFans(device, &fanCount) != NVML_SUCCESS || fanCount == 0)
+                fanCount = 1;
+            for (unsigned int fan = 0; fan < fanCount; ++fan)
+                nvmlDeviceSetDefaultFanSpeed_v2(device, fan);
+        }
+    });
+}
+
+void MinerCLI::stopNvmlFanControl()
+{
+    if (m_nvmlThread.joinable())
+    {
+        m_nvmlStop.store(true, std::memory_order_relaxed);
+        m_nvmlThread.join();
+    }
+    if (m_nvmlInitialized)
+    {
+        nvmlShutdown();
+        m_nvmlInitialized = false;
+    }
+}
+#endif

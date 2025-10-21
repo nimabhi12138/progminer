@@ -12,7 +12,8 @@ PoolManager::PoolManager(PoolSettings _settings)
   : m_Settings(std::move(_settings)),
     m_io_strand(g_io_service),
     m_failovertimer(g_io_service),
-    m_submithrtimer(g_io_service)
+    m_submithrtimer(g_io_service),
+    m_reconnecttimer(g_io_service)
 {
     m_this = this;
 
@@ -373,28 +374,60 @@ void PoolManager::rotateConnect()
     if (p_client && p_client->isConnected())
         return;
 
-    // Check we're within bounds
+    if (m_Settings.connections.empty())
+    {
+        cnote << "No more connections to try. Will retry in "
+              << m_Settings.reconnectDelaySeconds << " seconds...";
+        scheduleReconnect();
+        return;
+    }
+
     if (m_activeConnectionIdx >= m_Settings.connections.size())
         m_activeConnectionIdx = 0;
 
-    // If this connection is marked Unrecoverable then discard it
-    if (m_Settings.connections.at(m_activeConnectionIdx)->IsUnrecoverable())
+    auto getCurrentConnection = [&]() -> std::shared_ptr<URI>& {
+        return m_Settings.connections.at(m_activeConnectionIdx);
+    };
+
+    if (getCurrentConnection()->IsUnrecoverable())
     {
-        m_Settings.connections.erase(m_Settings.connections.begin() + m_activeConnectionIdx);
-        m_connectionAttempt = 0;
-        if (m_activeConnectionIdx >= m_Settings.connections.size())
-            m_activeConnectionIdx = 0;
-        m_connectionSwitches.fetch_add(1, std::memory_order_relaxed);
-    }
-    else if (m_connectionAttempt >= m_Settings.connectionMaxRetries)
-    {
-        // If this is the only connection we can't rotate
-        // forever
         if (m_Settings.connections.size() == 1)
         {
-            m_Settings.connections.erase(m_Settings.connections.begin() + m_activeConnectionIdx);
+            cnote << "Connection marked unrecoverable. Will retry in "
+                  << m_Settings.reconnectDelaySeconds << " seconds...";
+            getCurrentConnection()->ResetUnrecoverable();
+            m_connectionAttempt = 0;
+            scheduleReconnect();
+            return;
         }
-        // Rotate connections if above max attempts threshold
+        else
+        {
+            m_Settings.connections.erase(m_Settings.connections.begin() + m_activeConnectionIdx);
+            m_connectionAttempt = 0;
+            if (m_activeConnectionIdx >= m_Settings.connections.size())
+                m_activeConnectionIdx = 0;
+            m_connectionSwitches.fetch_add(1, std::memory_order_relaxed);
+
+            if (m_Settings.connections.empty())
+            {
+                cnote << "No more connections after removing unrecoverable entry. Will retry in "
+                      << m_Settings.reconnectDelaySeconds << " seconds...";
+                scheduleReconnect();
+                return;
+            }
+        }
+    }
+
+    if (m_connectionAttempt >= m_Settings.connectionMaxRetries)
+    {
+        if (m_Settings.connections.size() == 1)
+        {
+            m_connectionAttempt = 0;
+            cnote << "Connection attempts exhausted, retrying in "
+                  << m_Settings.reconnectDelaySeconds << " seconds...";
+            scheduleReconnect();
+            return;
+        }
         else
         {
             m_connectionAttempt = 0;
@@ -405,66 +438,41 @@ void PoolManager::rotateConnect()
         }
     }
 
-    if (!m_Settings.connections.empty() && m_Settings.connections.at(m_activeConnectionIdx)->Host() != "exit")
+    auto currentConn = getCurrentConnection();
+
+    if (currentConn->Host() != "exit")
     {
         if (p_client)
             p_client = nullptr;
 
-        if (m_Settings.connections.at(m_activeConnectionIdx)->Family() == ProtocolFamily::GETWORK)
+        if (currentConn->Family() == ProtocolFamily::GETWORK)
             p_client =
                 std::unique_ptr<PoolClient>(new EthGetworkClient(m_Settings.noWorkTimeout, m_Settings.getWorkPollInterval));
-        if (m_Settings.connections.at(m_activeConnectionIdx)->Family() == ProtocolFamily::STRATUM)
+        if (currentConn->Family() == ProtocolFamily::STRATUM)
             p_client = std::unique_ptr<PoolClient>(
                 new EthStratumClient(m_Settings.noWorkTimeout, m_Settings.noResponseTimeout));
-        if (m_Settings.connections.at(m_activeConnectionIdx)->Family() == ProtocolFamily::SIMULATION)
+        if (currentConn->Family() == ProtocolFamily::SIMULATION)
             p_client = std::unique_ptr<PoolClient>(
                 new SimulateClient(m_Settings.benchmarkBlock, m_Settings.benchmarkDiff));
 
         if (p_client)
             setClientHandlers();
 
-        // Count connectionAttempts
         m_connectionAttempt++;
 
-        // Invoke connections
-        m_selectedHost = m_Settings.connections.at(m_activeConnectionIdx)->Host() + ":" +
-                         to_string(m_Settings.connections.at(m_activeConnectionIdx)->Port());
-        p_client->setConnection(m_Settings.connections.at(m_activeConnectionIdx));
+        m_selectedHost = currentConn->Host() + ":" + to_string(currentConn->Port());
+        p_client->setConnection(currentConn);
         cnote << "Selected pool " << m_selectedHost;
 
         p_client->connect();
     }
     else
     {
-
-        if (m_Settings.connections.empty())
-            cnote << "No more connections to try. Exiting...";
-        else
-            cnote << "'exit' failover just got hit. Exiting...";
-
-        // Stop mining if applicable
-        if (Farm::f().isMining())
-        {
-            cnote << "Shutting down miners...";
-            Farm::f().stop();
-        }
-
-        m_running.store(false, std::memory_order_relaxed);
-        raise(SIGTERM);
+        cnote << "'exit' failover just got hit. Will retry in "
+              << m_Settings.reconnectDelaySeconds << " seconds...";
+        scheduleReconnect();
     }
 }
-
-void PoolManager::showMiningAt()
-{
-    // Should not happen
-    if (!m_currentWp)
-        return;
-
-    double d = dev::getHashesToTarget(m_currentWp.boundary.hex(HexPrefix::Add));
-    cnote << "Epoch : " EthWhite << m_currentWp.epoch << EthReset << " Difficulty : " EthWhite
-          << dev::getFormattedHashes(d) << EthReset;
-}
-
 void PoolManager::failovertimer_elapsed(const boost::system::error_code& ec)
 {
     if (!ec)
@@ -501,6 +509,26 @@ void PoolManager::submithrtimer_elapsed(const boost::system::error_code& ec)
     }
 }
 
+void PoolManager::reconnect_elapsed(const boost::system::error_code& ec)
+{
+    if (!ec && m_running.load(std::memory_order_relaxed))
+    {
+        g_io_service.post(m_io_strand.wrap(boost::bind(&PoolManager::rotateConnect, this)));
+    }
+}
+
+void PoolManager::scheduleReconnect()
+{
+    if (!m_running.load(std::memory_order_relaxed))
+        return;
+    boost::system::error_code ignored;
+    m_reconnecttimer.cancel(ignored);
+    m_reconnecttimer.expires_from_now(
+        boost::posix_time::seconds(m_Settings.reconnectDelaySeconds));
+    m_reconnecttimer.async_wait(
+        m_io_strand.wrap(boost::bind(&PoolManager::reconnect_elapsed, this, boost::asio::placeholders::error)));
+}
+
 int PoolManager::getCurrentEpoch()
 {
     return m_currentWp.epoch;
@@ -523,3 +551,13 @@ unsigned PoolManager::getEpochChanges()
 {
     return m_epochChanges.load(std::memory_order_relaxed);
 }
+void PoolManager::showMiningAt()
+{
+    if (!m_currentWp)
+        return;
+
+    double d = dev::getHashesToTarget(m_currentWp.boundary.hex(HexPrefix::Add));
+    cnote << "Epoch : " EthWhite << m_currentWp.epoch << EthReset << " Difficulty : " EthWhite
+          << dev::getFormattedHashes(d) << EthReset;
+}
+

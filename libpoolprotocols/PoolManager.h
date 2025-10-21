@@ -33,6 +33,7 @@ struct PoolSettings
     unsigned connectionMaxRetries = 3;  // Max number of connection retries
     unsigned benchmarkBlock = 0;        // Block number used by SimulateClient to test performances
     float benchmarkDiff = 1.0;          // Difficulty used by SimulateClient to test performances
+    unsigned reconnectDelaySeconds = 5; // Delay before retrying when all connections failed
 };
 
 class PoolManager
@@ -69,6 +70,8 @@ private:
 
     void failovertimer_elapsed(const boost::system::error_code& ec);
     void submithrtimer_elapsed(const boost::system::error_code& ec);
+    void reconnect_elapsed(const boost::system::error_code& ec);
+    void scheduleReconnect();
 
     std::atomic<bool> m_running = {false};
     std::atomic<bool> m_stopping = {false};
@@ -86,6 +89,7 @@ private:
     boost::asio::io_service::strand m_io_strand;
     boost::asio::deadline_timer m_failovertimer;
     boost::asio::deadline_timer m_submithrtimer;
+    boost::asio::deadline_timer m_reconnecttimer;
 
     std::unique_ptr<PoolClient> p_client = nullptr;
 
